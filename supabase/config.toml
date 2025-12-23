@@ -1,4 +1,4 @@
 project_id = "ouhtzpqlxgaznpzivzou"
 
 [functions.evolution-whatsapp]
-verify_jwt = true
+verify_jwt = false
