@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MessageCircle, CheckCircle2, Loader2, XCircle, RefreshCw, AlertCircle } from "lucide-react";
+import { MessageCircle, CheckCircle2, Loader2, XCircle, RefreshCw, AlertCircle, ImageOff } from "lucide-react";
 import { useCompany } from "@/hooks/useCompany";
 import { useEvolutionWhatsApp } from "@/hooks/useEvolutionWhatsApp";
 
@@ -18,10 +19,23 @@ export function IntegrationTab() {
     refreshQRCode,
   } = useEvolutionWhatsApp();
 
+  const [qrImageError, setQrImageError] = useState(false);
+
   const isConnected = connectionState === "open";
   const isConnecting = connectionState === "connecting" || connectionState === "loading";
   const hasQRCode = !!qrCode;
   const hasError = connectionState === "error";
+
+  // Normaliza o QR Code para garantir que tenha o prefixo correto
+  const getQRCodeSrc = () => {
+    if (!qrCode) return '';
+    // Se já tem o prefixo data:image, usa direto
+    if (qrCode.startsWith('data:image')) {
+      return qrCode;
+    }
+    // Senão, adiciona o prefixo
+    return `data:image/png;base64,${qrCode}`;
+  };
 
   if (companyLoading) {
     return (
@@ -153,11 +167,34 @@ export function IntegrationTab() {
 
             {/* QR Code Real */}
             <div className="w-64 h-64 border-2 border-primary/30 rounded-lg bg-white flex items-center justify-center overflow-hidden">
-              <img 
-                src={`data:image/png;base64,${qrCode}`} 
-                alt="QR Code WhatsApp"
-                className="w-full h-full object-contain p-2"
-              />
+              {qrImageError ? (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <ImageOff className="h-10 w-10" />
+                  <p className="text-sm text-center px-4">Erro ao carregar QR Code</p>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      setQrImageError(false);
+                      refreshQRCode();
+                    }}
+                  >
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Tentar novamente
+                  </Button>
+                </div>
+              ) : (
+                <img 
+                  src={getQRCodeSrc()} 
+                  alt="QR Code WhatsApp"
+                  className="w-full h-full object-contain p-2"
+                  onError={() => {
+                    console.error('Failed to load QR image, src:', qrCode?.substring(0, 50));
+                    setQrImageError(true);
+                  }}
+                  onLoad={() => setQrImageError(false)}
+                />
+              )}
             </div>
 
             {/* Pairing Code (se disponível) */}

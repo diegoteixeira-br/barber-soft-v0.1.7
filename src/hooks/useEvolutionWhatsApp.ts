@@ -34,7 +34,7 @@ export function useEvolutionWhatsApp(): UseEvolutionWhatsAppReturn {
     }
   }, []);
 
-  const checkStatus = useCallback(async () => {
+  const checkStatus = useCallback(async (autoRefreshQR = false) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
@@ -64,6 +64,23 @@ export function useEvolutionWhatsApp(): UseEvolutionWhatsAppReturn {
           });
         } else if (state === 'connecting') {
           setConnectionState("connecting");
+          // Se está connecting mas não tem QR Code, buscar automaticamente
+          if (autoRefreshQR && !qrCode) {
+            console.log('State is connecting but no QR code, auto-refreshing...');
+            // Buscar QR Code sem setar loading para não bloquear UI
+            try {
+              const { data: qrData } = await supabase.functions.invoke('evolution-whatsapp', {
+                body: { action: 'refresh-qr' },
+              });
+              if (qrData?.success && qrData.qrCode) {
+                console.log('Auto-refresh QR success, first 50 chars:', qrData.qrCode?.substring(0, 50));
+                setQrCode(qrData.qrCode);
+                setPairingCode(qrData.pairingCode);
+              }
+            } catch (e) {
+              console.error('Auto-refresh QR failed:', e);
+            }
+          }
         } else if (state === 'close' || state === 'disconnected') {
           setConnectionState("disconnected");
           setQrCode(null);
@@ -74,7 +91,7 @@ export function useEvolutionWhatsApp(): UseEvolutionWhatsAppReturn {
     } catch (err) {
       console.error('Status check failed:', err);
     }
-  }, [toast, stopPolling]);
+  }, [toast, stopPolling, qrCode]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -226,10 +243,10 @@ export function useEvolutionWhatsApp(): UseEvolutionWhatsAppReturn {
     }
   }, [toast]);
 
-  // Check initial status on mount
+  // Check initial status on mount (with auto-refresh QR)
   useEffect(() => {
     if (company?.evolution_instance_name) {
-      checkStatus();
+      checkStatus(true); // Pass true to auto-refresh QR if in connecting state
     }
   }, [company?.evolution_instance_name, checkStatus]);
 

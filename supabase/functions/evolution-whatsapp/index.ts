@@ -135,6 +135,12 @@ serve(async (req) => {
 
         const qrData = await qrResponse.json();
         console.log('QR response status:', qrResponse.status);
+        console.log('QR response data keys:', Object.keys(qrData));
+        
+        // Extract QR code from various possible response formats
+        const extractedQR = qrData.base64 || qrData.qrcode?.base64 || qrData.code;
+        console.log('Extracted QR (first 100 chars):', extractedQR?.substring(0, 100));
+        console.log('Has data:image prefix:', extractedQR?.startsWith('data:image'));
 
         if (!qrResponse.ok) {
           throw new Error(qrData.message || 'Erro ao gerar QR Code');
@@ -143,7 +149,7 @@ serve(async (req) => {
         return new Response(JSON.stringify({
           success: true,
           instanceName,
-          qrCode: qrData.base64 || qrData.qrcode?.base64,
+          qrCode: extractedQR,
           pairingCode: qrData.pairingCode,
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -280,6 +286,12 @@ serve(async (req) => {
 
         const qrData = await qrResponse.json();
         console.log('Refresh QR response status:', qrResponse.status);
+        console.log('Refresh QR response data keys:', Object.keys(qrData));
+        
+        // Extract QR code from various possible response formats
+        const extractedQR = qrData.base64 || qrData.qrcode?.base64 || qrData.code;
+        console.log('Refresh extracted QR (first 100 chars):', extractedQR?.substring(0, 100));
+        console.log('Refresh has data:image prefix:', extractedQR?.startsWith('data:image'));
 
         if (!qrResponse.ok) {
           throw new Error(qrData.message || 'Erro ao atualizar QR Code');
@@ -287,7 +299,7 @@ serve(async (req) => {
 
         return new Response(JSON.stringify({
           success: true,
-          qrCode: qrData.base64 || qrData.qrcode?.base64,
+          qrCode: extractedQR,
           pairingCode: qrData.pairingCode,
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
