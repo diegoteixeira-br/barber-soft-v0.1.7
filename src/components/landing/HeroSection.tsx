@@ -1,18 +1,14 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Play } from "lucide-react";
 import { ChatSimulation } from "./ChatSimulation";
 import { DashboardPreview } from "./DashboardPreview";
+import { DemoTourModal } from "./DemoTourModal";
 import { useNavigate } from "react-router-dom";
-
-const scrollToFeatures = () => {
-  const element = document.getElementById("funcionalidades");
-  if (element) {
-    element.scrollIntoView({ behavior: "smooth" });
-  }
-};
 
 export function HeroSection() {
   const navigate = useNavigate();
+  const [demoOpen, setDemoOpen] = useState(false);
 
   return (
     <section className="min-h-screen pt-24 pb-16 flex items-center relative overflow-hidden">
@@ -55,7 +51,7 @@ export function HeroSection() {
                 size="lg"
                 variant="outline"
                 className="border-border/50 hover:bg-muted/50 text-lg px-8 py-6"
-                onClick={scrollToFeatures}
+                onClick={() => setDemoOpen(true)}
               >
                 <Play className="mr-2 h-5 w-5" />
                 Ver Demo
@@ -110,6 +106,8 @@ export function HeroSection() {
           </div>
         </div>
       </div>
+
+      <DemoTourModal open={demoOpen} onOpenChange={setDemoOpen} />
     </section>
   );
 }
