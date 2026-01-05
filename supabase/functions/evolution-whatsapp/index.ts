@@ -81,6 +81,27 @@ serve(async (req) => {
 
     switch (action) {
       case 'create': {
+        // CLEANUP: Delete any existing instance for this unit before creating new one
+        if (unit.evolution_instance_name) {
+          console.log(`Cleaning up previous instance before create: ${unit.evolution_instance_name}`);
+          try {
+            await fetch(`${EVOLUTION_API_URL}/instance/logout/${unit.evolution_instance_name}`, {
+              method: 'DELETE',
+              headers: { 'apikey': EVOLUTION_GLOBAL_KEY! },
+            });
+          } catch (e) {
+            console.log('Logout previous instance error (non-critical):', e);
+          }
+          try {
+            await fetch(`${EVOLUTION_API_URL}/instance/delete/${unit.evolution_instance_name}`, {
+              method: 'DELETE',
+              headers: { 'apikey': EVOLUTION_GLOBAL_KEY! },
+            });
+          } catch (e) {
+            console.log('Delete previous instance error (non-critical):', e);
+          }
+        }
+
         // Generate unique instance name and token
         const timestamp = Date.now();
         const instanceName = `unit_${unit.id.substring(0, 8)}_${timestamp}`;
@@ -428,6 +449,54 @@ serve(async (req) => {
           success: true,
           qrCode: extractedQR,
           pairingCode: qrData.pairingCode,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'cleanup': {
+        // Cleanup action: delete instance by name passed directly (used when modal closes)
+        const body = await req.clone().json().catch(() => ({}));
+        const instanceToDelete = body.instance_name || unit.evolution_instance_name;
+        
+        console.log(`Cleanup requested for unit ${unit.id}, instance: ${instanceToDelete}`);
+
+        if (instanceToDelete) {
+          // Delete from Evolution API
+          try {
+            await fetch(`${EVOLUTION_API_URL}/instance/logout/${instanceToDelete}`, {
+              method: 'DELETE',
+              headers: { 'apikey': EVOLUTION_GLOBAL_KEY! },
+            });
+          } catch (e) {
+            console.log('Cleanup logout error (non-critical):', e);
+          }
+          try {
+            await fetch(`${EVOLUTION_API_URL}/instance/delete/${instanceToDelete}`, {
+              method: 'DELETE',
+              headers: { 'apikey': EVOLUTION_GLOBAL_KEY! },
+            });
+            console.log(`Instance ${instanceToDelete} deleted from Evolution API`);
+          } catch (e) {
+            console.log('Cleanup delete error (non-critical):', e);
+          }
+        }
+
+        // Clear database
+        await supabase
+          .from('units')
+          .update({
+            evolution_instance_name: null,
+            evolution_api_key: null,
+            whatsapp_name: null,
+            whatsapp_phone: null,
+            whatsapp_picture_url: null,
+          })
+          .eq('id', unit.id);
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'Instância removida com sucesso',
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

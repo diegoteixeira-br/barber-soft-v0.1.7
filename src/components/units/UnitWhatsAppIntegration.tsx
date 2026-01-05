@@ -25,6 +25,7 @@ export const UnitWhatsAppIntegration = forwardRef<UnitWhatsAppIntegrationRef, Un
       createInstance,
       disconnect,
       refreshQRCode,
+      cleanup,
     } = useUnitEvolutionWhatsApp(unit);
 
     // Timeout state for QR code generation
@@ -39,11 +40,11 @@ export const UnitWhatsAppIntegration = forwardRef<UnitWhatsAppIntegrationRef, Un
       setShowRetry(false);
     }, [connectionState, qrCode]);
 
-    // Handle retry - disconnect and create new instance
+    // Handle retry - cleanup failed instance before creating new one
     const handleRetry = async () => {
       setShowRetry(false);
-      await disconnect();
-      setTimeout(() => createInstance(), 500);
+      await cleanup();
+      await createInstance();
     };
 
     // Format phone number for display
@@ -60,13 +61,13 @@ export const UnitWhatsAppIntegration = forwardRef<UnitWhatsAppIntegrationRef, Un
     // Expose cleanup method to parent via ref
     useImperativeHandle(ref, () => ({
       cleanupOnClose: async () => {
-        // Only cleanup if in connecting state (QR showing but not scanned)
-        if (connectionState === "connecting") {
-          console.log("Modal closing during connecting state, cleaning up orphaned instance...");
-          await disconnect();
+        // Cleanup if not connected (connecting, loading, error states)
+        if (connectionState !== "open" && connectionState !== "disconnected") {
+          console.log(`Modal closing during ${connectionState} state, cleaning up orphaned instance...`);
+          await cleanup();
         }
       },
-    }), [connectionState, disconnect]);
+    }), [connectionState, cleanup]);
 
     const handleConnect = async () => {
       await createInstance();

@@ -18,10 +18,12 @@ interface UseUnitEvolutionWhatsAppReturn {
   isLoading: boolean;
   error: string | null;
   profile: WhatsAppProfile | null;
+  currentInstanceName: string | null;
   createInstance: () => Promise<void>;
   disconnect: () => Promise<void>;
   refreshQRCode: () => Promise<void>;
   checkStatus: () => Promise<void>;
+  cleanup: () => Promise<void>;
 }
 
 export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWhatsAppReturn {
@@ -32,6 +34,7 @@ export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWha
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<WhatsAppProfile | null>(null);
+  const [currentInstanceName, setCurrentInstanceName] = useState<string | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -153,6 +156,8 @@ export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWha
         throw new Error(data.error || 'Erro ao criar instância');
       }
 
+      // Save the instance name locally for cleanup purposes
+      setCurrentInstanceName(data.instanceName);
       setQrCode(data.qrCode);
       setPairingCode(data.pairingCode);
       setConnectionState("connecting");
@@ -210,6 +215,7 @@ export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWha
       setQrCode(null);
       setPairingCode(null);
       setProfile(null);
+      setCurrentInstanceName(null);
 
       toast({
         title: "WhatsApp desconectado",
@@ -276,6 +282,43 @@ export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWha
     }
   }, [unit?.id, toast]);
 
+  // Cleanup function - deletes the instance from Evolution API without relying on DB state
+  const cleanup = useCallback(async () => {
+    if (!unit?.id) return;
+
+    const instanceToCleanup = currentInstanceName || unit.evolution_instance_name;
+    if (!instanceToCleanup) {
+      console.log('No instance to cleanup');
+      return;
+    }
+
+    console.log(`Cleanup called for instance: ${instanceToCleanup}`);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      await supabase.functions.invoke('evolution-whatsapp', {
+        body: { 
+          action: 'cleanup', 
+          unit_id: unit.id,
+          instance_name: instanceToCleanup,
+        },
+      });
+
+      console.log('Cleanup completed successfully');
+    } catch (err) {
+      console.error('Cleanup error:', err);
+    } finally {
+      stopPolling();
+      setConnectionState("disconnected");
+      setQrCode(null);
+      setPairingCode(null);
+      setProfile(null);
+      setCurrentInstanceName(null);
+    }
+  }, [unit?.id, currentInstanceName, unit?.evolution_instance_name, stopPolling]);
+
   // Check initial status on mount (with auto-refresh QR)
   useEffect(() => {
     if (unit?.evolution_instance_name) {
@@ -310,9 +353,11 @@ export function useUnitEvolutionWhatsApp(unit: Unit | null): UseUnitEvolutionWha
     isLoading,
     error,
     profile,
+    currentInstanceName,
     createInstance,
     disconnect,
     refreshQRCode,
     checkStatus,
+    cleanup,
   };
 }
