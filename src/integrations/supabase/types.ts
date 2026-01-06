@@ -101,7 +101,7 @@ export type Database = {
         Row: {
           appointment_id: string | null
           automation_type: string
-          client_id: string
+          client_id: string | null
           company_id: string
           created_at: string
           error_message: string | null
@@ -112,7 +112,7 @@ export type Database = {
         Insert: {
           appointment_id?: string | null
           automation_type: string
-          client_id: string
+          client_id?: string | null
           company_id: string
           created_at?: string
           error_message?: string | null
@@ -123,7 +123,7 @@ export type Database = {
         Update: {
           appointment_id?: string | null
           automation_type?: string
-          client_id?: string
+          client_id?: string | null
           company_id?: string
           created_at?: string
           error_message?: string | null

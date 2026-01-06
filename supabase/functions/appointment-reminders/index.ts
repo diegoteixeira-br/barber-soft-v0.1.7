@@ -6,6 +6,7 @@ const corsHeaders = {
 };
 
 interface BusinessSettings {
+  id: string;
   user_id: string;
   appointment_reminder_enabled: boolean;
   appointment_reminder_minutes: number;
@@ -17,11 +18,12 @@ interface Appointment {
   client_name: string;
   client_phone: string;
   start_time: string;
+  end_time: string;
   status: string;
-  company_id: string;
-  unit_id: string;
   barber_id: string;
   service_id: string;
+  unit_id: string;
+  company_id: string;
 }
 
 interface Barber {
@@ -38,175 +40,158 @@ interface Unit {
   id: string;
   name: string;
   evolution_instance_name: string | null;
+  evolution_api_key: string | null;
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const n8nWebhookUrl = Deno.env.get("N8N_MARKETING_URL");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const evolutionApiUrl = Deno.env.get("EVOLUTION_API_URL");
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error("Missing Supabase environment variables");
+    if (!evolutionApiUrl) {
+      console.error("❌ EVOLUTION_API_URL não configurada");
+      return new Response(
+        JSON.stringify({ error: "EVOLUTION_API_URL não configurada" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    if (!n8nWebhookUrl) {
-      throw new Error("Missing N8N_MARKETING_URL environment variable");
-    }
-
-    // Create Supabase client with service role (bypass RLS)
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log("[appointment-reminders] Starting reminder check...");
+    console.log("=== INICIANDO LEMBRETES DE AGENDAMENTO (NATIVO) ===");
+    console.log(`Horário atual: ${new Date().toISOString()}`);
 
-    // Get current time in Brasília timezone
-    const now = new Date();
-    const brasiliaOffset = -3 * 60; // UTC-3 in minutes
-    const brasiliaTime = new Date(now.getTime() + (brasiliaOffset - now.getTimezoneOffset()) * 60000);
-
-    console.log(`[appointment-reminders] Current time in Brasília: ${brasiliaTime.toISOString()}`);
-
-    // Fetch all business settings with appointment reminder enabled
+    // Buscar empresas com lembrete habilitado
     const { data: settingsList, error: settingsError } = await supabase
       .from("business_settings")
-      .select("user_id, appointment_reminder_enabled, appointment_reminder_minutes, appointment_reminder_template")
+      .select("*")
       .eq("appointment_reminder_enabled", true);
 
     if (settingsError) {
-      console.error("[appointment-reminders] Error fetching settings:", settingsError);
+      console.error("Erro ao buscar configurações:", settingsError);
       throw settingsError;
     }
 
     if (!settingsList || settingsList.length === 0) {
-      console.log("[appointment-reminders] No businesses with appointment reminders enabled");
+      console.log("Nenhuma empresa com lembrete habilitado");
       return new Response(
-        JSON.stringify({ success: true, message: "No reminders to process" }),
+        JSON.stringify({ message: "Nenhuma empresa com lembrete habilitado", sent: 0 }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`[appointment-reminders] Found ${settingsList.length} businesses with reminders enabled`);
+    console.log(`Encontradas ${settingsList.length} empresas com lembrete habilitado`);
 
     let totalSent = 0;
     let totalSkipped = 0;
+    const results: { appointment_id: string; client_name: string; status: string; error?: string }[] = [];
 
     for (const settings of settingsList as BusinessSettings[]) {
-      console.log(`[appointment-reminders] Processing user: ${settings.user_id}`);
+      const reminderMinutes = settings.appointment_reminder_minutes || 30;
+      console.log(`\n--- Processando empresa user_id=${settings.user_id}, lembrete=${reminderMinutes}min ---`);
 
-      // Get company for this user (only to get company_id)
+      // Buscar company_id
       const { data: company, error: companyError } = await supabase
         .from("companies")
-        .select("id, owner_user_id")
+        .select("id, name")
         .eq("owner_user_id", settings.user_id)
         .single();
 
       if (companyError || !company) {
-        console.log(`[appointment-reminders] No company found for user ${settings.user_id}`);
+        console.log(`Empresa não encontrada para user_id=${settings.user_id}`);
         continue;
       }
 
-      // Calculate the time window for reminders
-      const reminderMinutes = settings.appointment_reminder_minutes || 30;
-      
-      // Window: we look for appointments that start within the reminder window (±3 min tolerance)
-      const reminderTargetTime = new Date(now.getTime() + reminderMinutes * 60 * 1000);
-      const reminderWindowStart = new Date(reminderTargetTime.getTime() - 3 * 60 * 1000);
-      const reminderWindowEnd = new Date(reminderTargetTime.getTime() + 3 * 60 * 1000);
+      console.log(`Empresa: ${company.name} (${company.id})`);
 
-      console.log(`[appointment-reminders] Looking for appointments between ${reminderWindowStart.toISOString()} and ${reminderWindowEnd.toISOString()}`);
+      // Calcular janela de tempo
+      const now = new Date();
+      const targetTime = new Date(now.getTime() + reminderMinutes * 60 * 1000);
+      const windowStart = new Date(targetTime.getTime() - 3 * 60 * 1000);
+      const windowEnd = new Date(targetTime.getTime() + 3 * 60 * 1000);
 
-      // Get appointments in the reminder window - include both pending and scheduled status
+      console.log(`Janela de busca: ${windowStart.toISOString()} até ${windowEnd.toISOString()}`);
+
+      // Buscar agendamentos na janela (APENAS status válidos: pending e confirmed)
       const { data: appointments, error: appointmentsError } = await supabase
         .from("appointments")
-        .select("id, client_name, client_phone, start_time, status, company_id, unit_id, barber_id, service_id")
+        .select("*")
         .eq("company_id", company.id)
-        .in("status", ["scheduled", "pending", "confirmed"])
-        .gte("start_time", reminderWindowStart.toISOString())
-        .lte("start_time", reminderWindowEnd.toISOString())
-        .not("client_phone", "is", null);
+        .in("status", ["pending", "confirmed"])
+        .gte("start_time", windowStart.toISOString())
+        .lte("start_time", windowEnd.toISOString());
 
       if (appointmentsError) {
-        console.error(`[appointment-reminders] Error fetching appointments:`, appointmentsError);
+        console.error("Erro ao buscar agendamentos:", appointmentsError);
         continue;
       }
 
       if (!appointments || appointments.length === 0) {
-        console.log(`[appointment-reminders] No appointments in reminder window for company ${company.id}`);
+        console.log("Nenhum agendamento encontrado na janela");
         continue;
       }
 
-      console.log(`[appointment-reminders] Found ${appointments.length} appointments in window`);
+      console.log(`Encontrados ${appointments.length} agendamentos na janela`);
 
-      // Group appointments by unit_id
-      const appointmentsByUnit = new Map<string, Appointment[]>();
+      // Agrupar por unit_id
+      const appointmentsByUnit: Record<string, Appointment[]> = {};
       for (const apt of appointments as Appointment[]) {
-        const unitAppts = appointmentsByUnit.get(apt.unit_id) || [];
-        unitAppts.push(apt);
-        appointmentsByUnit.set(apt.unit_id, unitAppts);
+        if (!apt.client_phone) {
+          console.log(`Agendamento ${apt.id} sem telefone, pulando`);
+          continue;
+        }
+        if (!appointmentsByUnit[apt.unit_id]) {
+          appointmentsByUnit[apt.unit_id] = [];
+        }
+        appointmentsByUnit[apt.unit_id].push(apt);
       }
 
-      console.log(`[appointment-reminders] Appointments grouped into ${appointmentsByUnit.size} units`);
+      // Processar cada unidade
+      for (const [unitId, unitAppointments] of Object.entries(appointmentsByUnit)) {
+        // Buscar dados da unidade (incluindo WhatsApp)
+        const { data: unit, error: unitError } = await supabase
+          .from("units")
+          .select("id, name, evolution_instance_name, evolution_api_key")
+          .eq("id", unitId)
+          .single();
 
-      // Get all unit IDs
-      const unitIds = [...appointmentsByUnit.keys()];
-
-      // Fetch units with their WhatsApp instances
-      const { data: units, error: unitsError } = await supabase
-        .from("units")
-        .select("id, name, evolution_instance_name")
-        .in("id", unitIds);
-
-      if (unitsError) {
-        console.error(`[appointment-reminders] Error fetching units:`, unitsError);
-        continue;
-      }
-
-      const unitMap = new Map((units || []).map((u: Unit) => [u.id, u]));
-
-      // Get barbers and services for message formatting
-      const barberIds = [...new Set(appointments.map((a: Appointment) => a.barber_id).filter(Boolean))];
-      const serviceIds = [...new Set(appointments.map((a: Appointment) => a.service_id).filter(Boolean))];
-
-      const { data: barbers } = await supabase
-        .from("barbers")
-        .select("id, name")
-        .in("id", barberIds);
-
-      const { data: services } = await supabase
-        .from("services")
-        .select("id, name")
-        .in("id", serviceIds);
-
-      const barberMap = new Map((barbers || []).map((b: Barber) => [b.id, b.name]));
-      const serviceMap = new Map((services || []).map((s: Service) => [s.id, s.name]));
-
-      // Process each unit separately
-      for (const [unitId, unitAppointments] of appointmentsByUnit) {
-        const unit = unitMap.get(unitId);
-        
-        if (!unit) {
-          console.log(`[appointment-reminders] Unit ${unitId} not found, skipping`);
+        if (unitError || !unit) {
+          console.log(`Unidade ${unitId} não encontrada`);
           continue;
         }
 
-        if (!unit.evolution_instance_name) {
-          console.log(`[appointment-reminders] No WhatsApp instance for unit "${unit.name}" (${unitId}), skipping`);
+        if (!unit.evolution_instance_name || !unit.evolution_api_key) {
+          console.log(`Unidade ${unit.name} sem WhatsApp configurado`);
           continue;
         }
 
-        console.log(`[appointment-reminders] Processing unit "${unit.name}" with WhatsApp instance: ${unit.evolution_instance_name}`);
+        console.log(`Processando unidade: ${unit.name} (instância: ${unit.evolution_instance_name})`);
 
-        const targetsToSend: { appointment: Appointment; message: string }[] = [];
+        // Buscar barbeiros e serviços necessários
+        const barberIds = [...new Set(unitAppointments.map(a => a.barber_id).filter(Boolean))];
+        const serviceIds = [...new Set(unitAppointments.map(a => a.service_id).filter(Boolean))];
 
+        const { data: barbers } = await supabase
+          .from("barbers")
+          .select("id, name")
+          .in("id", barberIds.length > 0 ? barberIds : ['00000000-0000-0000-0000-000000000000']);
+
+        const { data: services } = await supabase
+          .from("services")
+          .select("id, name")
+          .in("id", serviceIds.length > 0 ? serviceIds : ['00000000-0000-0000-0000-000000000000']);
+
+        const barberMap = new Map((barbers || []).map((b: Barber) => [b.id, b.name]));
+        const serviceMap = new Map((services || []).map((s: Service) => [s.id, s.name]));
+
+        // Processar cada agendamento
         for (const appointment of unitAppointments) {
-          if (!appointment.client_phone) continue;
-
-          // Check if reminder already sent for this appointment
+          // Verificar se já enviou lembrete para este agendamento
           const { data: existingLog } = await supabase
             .from("automation_logs")
             .select("id")
@@ -215,126 +200,156 @@ Deno.serve(async (req) => {
             .maybeSingle();
 
           if (existingLog) {
+            console.log(`Lembrete já enviado para agendamento ${appointment.id}`);
             totalSkipped++;
-            console.log(`[appointment-reminders] Reminder already sent for appointment ${appointment.id}`);
             continue;
           }
 
-          // Format the message
+          // Buscar client_id se existir
+          let clientId: string | null = null;
+          if (appointment.client_phone) {
+            const normalizedPhone = appointment.client_phone.replace(/\D/g, "");
+            const { data: client } = await supabase
+              .from("clients")
+              .select("id")
+              .eq("company_id", company.id)
+              .eq("unit_id", unitId)
+              .or(`phone.eq.${normalizedPhone},phone.eq.${appointment.client_phone}`)
+              .maybeSingle();
+
+            if (client) {
+              clientId = client.id;
+            }
+          }
+
+          // Formatar mensagem
           const startTime = new Date(appointment.start_time);
-          const timeStr = startTime.toLocaleTimeString("pt-BR", {
-            hour: "2-digit",
-            minute: "2-digit",
-            timeZone: "America/Sao_Paulo",
-          });
-          const dateStr = startTime.toLocaleDateString("pt-BR", {
-            day: "2-digit",
-            month: "2-digit",
-            timeZone: "America/Sao_Paulo",
-          });
+          const barberName = barberMap.get(appointment.barber_id) || "Profissional";
+          const serviceName = serviceMap.get(appointment.service_id) || "Serviço";
 
-          const barberName = barberMap.get(appointment.barber_id) || "nosso profissional";
-          const serviceName = serviceMap.get(appointment.service_id) || "seu serviço";
+          let message = settings.appointment_reminder_template || 
+            "Olá {{nome}}! Lembrete: você tem um agendamento às {{horario}} com {{profissional}}. Serviço: {{servico}}. Te esperamos!";
 
-          const message = settings.appointment_reminder_template
-            .replace(/\{\{nome\}\}/gi, appointment.client_name)
-            .replace(/\{\{name\}\}/gi, appointment.client_name)
-            .replace(/\{\{horario\}\}/gi, timeStr)
-            .replace(/\{\{hora\}\}/gi, timeStr)
-            .replace(/\{\{data\}\}/gi, dateStr)
-            .replace(/\{\{date\}\}/gi, dateStr)
+          message = message
+            .replace(/\{\{nome\}\}/gi, appointment.client_name || "Cliente")
+            .replace(/\{\{name\}\}/gi, appointment.client_name || "Cliente")
+            .replace(/\{\{data\}\}/gi, startTime.toLocaleDateString("pt-BR"))
+            .replace(/\{\{date\}\}/gi, startTime.toLocaleDateString("pt-BR"))
+            .replace(/\{\{horario\}\}/gi, startTime.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }))
+            .replace(/\{\{hora\}\}/gi, startTime.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }))
             .replace(/\{\{profissional\}\}/gi, barberName)
             .replace(/\{\{barber\}\}/gi, barberName)
             .replace(/\{\{servico\}\}/gi, serviceName)
-            .replace(/\{\{service\}\}/gi, serviceName);
+            .replace(/\{\{service\}\}/gi, serviceName)
+            .replace(/\{\{unidade\}\}/gi, unit.name);
 
-          targetsToSend.push({ appointment, message });
-        }
+          // Formatar telefone
+          let phone = appointment.client_phone.replace(/\D/g, "");
+          if (phone.length <= 11) {
+            phone = "55" + phone;
+          }
 
-        if (targetsToSend.length === 0) {
-          console.log(`[appointment-reminders] No new reminders to send for unit "${unit.name}"`);
-          continue;
-        }
+          console.log(`Enviando lembrete para ${appointment.client_name} (${phone})`);
 
-        console.log(`[appointment-reminders] Sending ${targetsToSend.length} reminders for unit "${unit.name}"`);
+          // Enviar via Evolution API (DIRETO, sem n8n)
+          try {
+            const evolutionUrl = `${evolutionApiUrl}/message/sendText/${unit.evolution_instance_name}`;
+            const response = await fetch(evolutionUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": unit.evolution_api_key,
+              },
+              body: JSON.stringify({
+                number: phone,
+                delay: 1000,
+                text: message,
+              }),
+            });
 
-        // Send to n8n webhook
-        try {
-          const payload = {
-            instance_name: unit.evolution_instance_name,
-            targets: targetsToSend.map((t) => ({
-              phone: t.appointment.client_phone,
-              name: t.appointment.client_name,
-              message: t.message,
-            })),
-            automation_type: "appointment_reminder",
-          };
+            const responseData = await response.json();
 
-          console.log(`[appointment-reminders] Sending payload to n8n:`, JSON.stringify(payload, null, 2));
+            if (response.ok) {
+              console.log(`✅ Lembrete enviado para ${appointment.client_name}`);
 
-          const n8nResponse = await fetch(n8nWebhookUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-
-          if (!n8nResponse.ok) {
-            console.error(`[appointment-reminders] n8n error: ${n8nResponse.status}`);
-            // Log failures
-            for (const target of targetsToSend) {
+              // Gravar log de sucesso
               await supabase.from("automation_logs").insert({
                 company_id: company.id,
+                client_id: clientId,
+                appointment_id: appointment.id,
                 automation_type: "appointment_reminder",
-                appointment_id: target.appointment.id,
-                client_id: target.appointment.client_phone, // Using phone as fallback since we don't have client_id
-                status: "failed",
-                error_message: `n8n returned ${n8nResponse.status}`,
+                status: "sent",
+                sent_at: new Date().toISOString(),
               });
-            }
-          } else {
-            console.log(`[appointment-reminders] Successfully sent to n8n for unit "${unit.name}"`);
-            // Log successes - IMMEDIATELY to prevent duplicates
-            for (const target of targetsToSend) {
-              await supabase.from("automation_logs").insert({
-                company_id: company.id,
-                automation_type: "appointment_reminder",
-                appointment_id: target.appointment.id,
-                client_id: target.appointment.client_phone, // Using phone as fallback
+
+              totalSent++;
+              results.push({
+                appointment_id: appointment.id,
+                client_name: appointment.client_name,
                 status: "sent",
               });
+            } else {
+              console.error(`❌ Erro ao enviar para ${appointment.client_name}:`, responseData);
+
+              // Gravar log de falha
+              await supabase.from("automation_logs").insert({
+                company_id: company.id,
+                client_id: clientId,
+                appointment_id: appointment.id,
+                automation_type: "appointment_reminder",
+                status: "failed",
+                error_message: JSON.stringify(responseData),
+                sent_at: new Date().toISOString(),
+              });
+
+              results.push({
+                appointment_id: appointment.id,
+                client_name: appointment.client_name,
+                status: "failed",
+                error: JSON.stringify(responseData),
+              });
             }
-            totalSent += targetsToSend.length;
-          }
-        } catch (webhookError) {
-          console.error(`[appointment-reminders] Webhook error:`, webhookError);
-          for (const target of targetsToSend) {
+          } catch (sendError: unknown) {
+            const errorMessage = sendError instanceof Error ? sendError.message : String(sendError);
+            console.error(`❌ Erro de conexão ao enviar para ${appointment.client_name}:`, sendError);
+
             await supabase.from("automation_logs").insert({
               company_id: company.id,
+              client_id: clientId,
+              appointment_id: appointment.id,
               automation_type: "appointment_reminder",
-              appointment_id: target.appointment.id,
-              client_id: target.appointment.client_phone,
               status: "failed",
-              error_message: String(webhookError),
+              error_message: errorMessage,
+              sent_at: new Date().toISOString(),
+            });
+
+            results.push({
+              appointment_id: appointment.id,
+              client_name: appointment.client_name,
+              status: "failed",
+              error: errorMessage,
             });
           }
         }
       }
     }
 
-    console.log(`[appointment-reminders] Completed. Sent: ${totalSent}, Skipped: ${totalSkipped}`);
+    console.log(`\n=== RESUMO: ${totalSent} enviados, ${totalSkipped} já enviados anteriormente ===`);
 
     return new Response(
       JSON.stringify({
-        success: true,
+        message: "Processamento concluído",
         sent: totalSent,
         skipped: totalSkipped,
+        results,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (error) {
-    console.error("[appointment-reminders] Error:", error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Erro geral:", error);
     return new Response(
-      JSON.stringify({ success: false, error: String(error) }),
+      JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
